@@ -147,6 +147,35 @@ int gdr_close(gdr_t g)
     return ret;
 }
 
+int gdr_map_dma(gdr_t g, gdr_mh_t handle, uint32_t pci_bus, uint32_t pci_dev, uint32_t pci_func,
+                uint64_t* dma_addresses, size_t max_addresses)
+{
+	int ret = 0;
+	int retcode;
+
+//	const size_t phys_addr_count = 16;
+//	uint64_t phys_addr[phys_addr_count];
+
+	struct GDRDRV_IOC_MAP_DMA_PARAMS params = {0};
+	params.phys_addr_buf = (uint64_t) dma_addresses;
+	params.buf_size = max_addresses;
+	params.handle = handle;
+	params.pci_bus = pci_bus;
+	params.pci_devfn = (pci_dev << 16) | pci_func;
+
+	retcode = ioctl(g->fd, GDRDRV_IOC_MAP_DMA, &params);
+	if (0 != retcode) {
+		ret = errno;
+		gdr_err("ioctl error (errno=%d)\n", ret);
+	}
+
+	for(size_t i = 0; i < params.entries_written; i++) {
+		gdr_info("DMA phys addr[%lld]: %#x\n", i, dma_addresses[i]);
+	}
+
+	return params.entries_written;
+}
+
 int gdr_pin_buffer(gdr_t g, unsigned long addr, size_t size, uint64_t p2p_token, uint32_t va_space, gdr_mh_t *handle)
 {
     int ret = 0;

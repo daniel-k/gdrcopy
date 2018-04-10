@@ -56,6 +56,8 @@ extern "C" {
 struct gdr;
 typedef struct gdr *gdr_t;
 
+struct pci_dev;
+
 // Initialize the library, e.g. by opening a connection to the kernel-mode
 // driver. Returns an handle to the library state object.
 gdr_t gdr_open();
@@ -111,6 +113,8 @@ int gdr_map(gdr_t g, gdr_mh_t handle, void **va, size_t size);
 // get rid of a user-space mapping.
 // First invoke gdr_unmap() then gdr_unpin_buffer().
 int gdr_unmap(gdr_t g, gdr_mh_t handle, void *va, size_t size);
+
+int gdr_map_dma(gdr_t g, gdr_mh_t handle, uint32_t pci_bus, uint32_t pci_dev, uint32_t pci_func, uint64_t* dma_addresses, size_t max_addresses);
 
 // gpubar_ptr is a user-space virtual address, i.e. one returned by gdr_map()
 int gdr_copy_to_bar(void  *gpubar_ptr, const void *cpumem_ptr, size_t size);

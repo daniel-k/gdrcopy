@@ -36,6 +36,12 @@
 #include <linux/timex.h>
 #include <linux/timer.h>
 
+// for nicer completion
+#include <linux/mm_types.h>
+#include <linux/types.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+
 #ifndef random_get_entropy
 #define random_get_entropy()	get_cycles()
 #endif
@@ -298,6 +304,82 @@ static void gdrdrv_get_pages_free_callback(void *data)
 
 //-----------------------------------------------------------------------------
 
+static int gdrdrv_map_dma(gdr_info_t* info, void __user* _params)
+{
+	int ret = 0;
+	int retcode;
+	size_t i;
+	gdr_mr_t* mr = NULL;
+	struct nvidia_p2p_dma_mapping* mapping;
+	struct pci_dev* pci_dev = NULL;
+	struct GDRDRV_IOC_MAP_DMA_PARAMS params = {0};
+
+	if (copy_from_user(&params, _params, sizeof(params))) {
+		gdr_err("copy_from_user failed on user pointer %p\n", _params);
+		ret = -EFAULT;
+		goto out;
+	}
+
+	pci_dev = pci_get_bus_and_slot(params.pci_bus, params.pci_devfn);
+	if(pci_dev == NULL) {
+		gdr_err("cannot find PCI device %d:%d\n",
+		        params.pci_bus, params.pci_devfn);
+		ret = -ENODEV;
+		goto out;
+	}
+
+	mr = gdr_mr_from_handle(info, params.handle);
+	if (NULL == mr) {
+		gdr_err("unexpected handle %x\n", params.handle);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	gdr_dbg("pci_dev: %p\n", pci_dev);
+	gdr_dbg(" enable_cnt: %d\n", atomic_read(&pci_dev->enable_cnt));
+//	pci_
+//	goto out;
+
+//	gdr_dbg("  slot: %s\n", pci_slot_name(pci_dev->slot));
+	gdr_dbg("mr: %p\n", mr);
+	gdr_dbg("page_table: %p\n", mr->page_table);
+
+	if ((retcode = nvidia_p2p_dma_map_pages(pci_dev, mr->page_table, &mapping))) {
+		gdr_err("cannot create dma mapping: %d\n", retcode);
+		ret = -ENODEV;
+		goto out;
+	}
+
+	gdr_dbg("mapping: %p\n", mapping);
+
+	if(mapping->entries == 0) {
+		gdr_err("no dma mapping retrieved\n");
+		ret = -ENOENT;
+		goto out;
+	}
+
+	for(i = 0; i < mapping->entries; i++) {
+		gdr_info("DMA mapping [%lu]: %#llx\n", i, mapping->dma_addresses[i]);
+	}
+
+	params.entries_written = MIN(mapping->entries, params.buf_size);
+	if(copy_to_user((void*) params.phys_addr_buf, mapping->dma_addresses, params.entries_written * sizeof(*mapping->dma_addresses))) {
+		gdr_err("cannot copy DMA addresses to user at %lld\n", params.phys_addr_buf);
+		ret = -ENOMEM;
+		goto out;
+	}
+
+    out:
+	if (!ret && copy_to_user(_params, &params, sizeof(params))) {
+		gdr_err("copy_to_user failed on user pointer %p\n", _params);
+		ret = -EFAULT;
+	}
+
+	return ret;
+}
+
+//-----------------------------------------------------------------------------
+
 static int gdrdrv_pin_buffer(gdr_info_t *info, void __user *_params)
 {
     struct GDRDRV_IOC_PIN_BUFFER_PARAMS params = {0};
@@ -397,7 +479,6 @@ static int gdrdrv_pin_buffer(gdr_info_t *info, void __user *_params)
             gdr_dbg("page[%d]=0x%016llx%s\n", i, page_table->pages[i]->physical_address, (i>19)?"and counting":"");
         }
     }
-
 
     // here a typical driver would use the page_table to fill in some HW
     // DMA data structure
@@ -541,8 +622,6 @@ static int gdrdrv_ioctl(struct inode *inode, struct file *filp, unsigned int cmd
     gdr_info_t *info = filp->private_data;
     void __user *argp = (void __user *)arg;
 
-    gdr_dbg("ioctl called (cmd 0x%x)\n", cmd);
-
     if (_IOC_TYPE(cmd) != GDRDRV_IOCTL) {
         gdr_err("malformed IOCTL code type=%08x\n", _IOC_TYPE(cmd));
         return -EINVAL;
@@ -564,6 +643,10 @@ static int gdrdrv_ioctl(struct inode *inode, struct file *filp, unsigned int cmd
     case GDRDRV_IOC_GET_INFO:
         ret = gdrdrv_get_info(info, argp);
         break;
+
+	case GDRDRV_IOC_MAP_DMA:
+		ret = gdrdrv_map_dma(info, argp);
+		break;
 
     default:
         gdr_err("unsupported IOCTL code\n");

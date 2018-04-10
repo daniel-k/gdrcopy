@@ -52,6 +52,23 @@ MODULE_LICENSE("MIT");
 MODULE_DESCRIPTION("P2P dummy kernel-mode driver");
 MODULE_VERSION("1.0");
 
+int nvidia_p2p_dma_map_pages(struct pci_dev *peer,
+        struct nvidia_p2p_page_table *page_table,
+        struct nvidia_p2p_dma_mapping **dma_mapping)
+{
+	return -EINVAL;
+}
+EXPORT_SYMBOL(nvidia_p2p_dma_map_pages);
+
+int nvidia_p2p_dma_unmap_pages(struct pci_dev *peer,
+        struct nvidia_p2p_page_table *page_table,
+        struct nvidia_p2p_dma_mapping *dma_mapping)
+{
+	return -EINVAL;
+}
+EXPORT_SYMBOL(nvidia_p2p_dma_unmap_pages);
+
+
 int nvidia_p2p_init_mapping(uint64_t p2p_token,
                             struct nvidia_p2p_params *params,
                             void (*destroy_callback)(void *data),

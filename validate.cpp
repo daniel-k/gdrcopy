@@ -27,10 +27,91 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
+#include <linux/pci.h>
+
+#include <sys/mman.h>
+
 using namespace std;
 
 #include "gdrapi.h"
 #include "common.hpp"
+
+
+
+#define _XOPEN_SOURCE 700
+#include <fcntl.h> /* open */
+#include <stdint.h> /* uint64_t  */
+#include <stdio.h> /* printf */
+#include <stdlib.h> /* size_t */
+#include <unistd.h> /* pread, sysconf */
+
+typedef struct {
+	uint64_t pfn : 54;
+	unsigned int soft_dirty : 1;
+	unsigned int file_page : 1;
+	unsigned int swapped : 1;
+	unsigned int present : 1;
+} PagemapEntry;
+
+/* Parse the pagemap entry for the given virtual address.
+ *
+ * @param[out] entry      the parsed entry
+ * @param[in]  pagemap_fd file descriptor to an open /proc/pid/pagemap file
+ * @param[in]  vaddr      virtual address to get entry for
+ * @return 0 for success, 1 for failure
+ */
+int pagemap_get_entry(PagemapEntry *entry, int pagemap_fd, uintptr_t vaddr)
+{
+	size_t nread;
+	ssize_t ret;
+	uint64_t data;
+
+	nread = 0;
+	while (nread < sizeof(data)) {
+		ret = pread(pagemap_fd, &data, sizeof(data),
+		        (vaddr / sysconf(_SC_PAGE_SIZE)) * sizeof(data) + nread);
+		nread += ret;
+		if (ret <= 0) {
+			return 1;
+		}
+	}
+	entry->pfn = data & (((uint64_t)1 << 54) - 1);
+	entry->soft_dirty = (data >> 54) & 1;
+	entry->file_page = (data >> 61) & 1;
+	entry->swapped = (data >> 62) & 1;
+	entry->present = (data >> 63) & 1;
+	return 0;
+}
+
+/* Convert the given virtual address to physical using /proc/PID/pagemap.
+ *
+ * @param[out] paddr physical address
+ * @param[in]  pid   process to convert for
+ * @param[in] vaddr virtual address to get entry for
+ * @return 0 for success, 1 for failure
+ */
+int virt_to_phys_user(uintptr_t *paddr, pid_t pid, uintptr_t vaddr)
+{
+	char pagemap_file[BUFSIZ];
+	int pagemap_fd;
+
+	snprintf(pagemap_file, sizeof(pagemap_file), "/proc/%ju/pagemap", (uintmax_t)pid);
+	pagemap_fd = open(pagemap_file, O_RDONLY);
+	if (pagemap_fd < 0) {
+		return 1;
+	}
+	PagemapEntry entry;
+	if (pagemap_get_entry(&entry, pagemap_fd, vaddr)) {
+		return 1;
+	}
+	close(pagemap_fd);
+	*paddr = (entry.pfn * sysconf(_SC_PAGE_SIZE)) + (vaddr % sysconf(_SC_PAGE_SIZE));
+	return 0;
+}
+
+
+#define MAP_SIZE 4096UL
+#define MAP_MASK (MAP_SIZE - 1)
 
 
 int main(int argc, char *argv[])
@@ -43,12 +124,18 @@ int main(int argc, char *argv[])
 
     printf("buffer size: %zu\n", size);
     CUdeviceptr d_A;
-    ASSERTDRV(cuMemAlloc(&d_A, size));
-    ASSERTDRV(cuMemsetD8(d_A, 0xA5, size));
-    //OUT << "device ptr: " << hex << d_A << dec << endl;
+	CUdeviceptr d_B;
+
+	ASSERTDRV(cuMemAlloc(&d_A, size));
+	ASSERTDRV(cuMemAlloc(&d_B, 2*size));
+
+	ASSERTDRV(cuMemsetD8(d_A, 0xA5, size));
+	ASSERTDRV(cuMemsetD8(d_B, 0xA5, 2*size));
+	//OUT << "device ptr: " << hex << d_A << dec << endl;
 
     unsigned int flag = 1;
     ASSERTDRV(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, d_A));
+	ASSERTDRV(cuPointerSetAttribute(&flag, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, d_B));
 
     uint32_t *init_buf = new uint32_t[size];
     uint32_t *copy_buf = new uint32_t[size];
@@ -60,13 +147,47 @@ int main(int argc, char *argv[])
     ASSERT_NEQ(g, (void*)0);
 
     gdr_mh_t mh;
-    BEGIN_CHECK {
+	gdr_mh_t mh2;
+	BEGIN_CHECK {
         CUdeviceptr d_ptr = d_A;
+		CUdeviceptr d_ptr2 = d_B;
+
+		uint64_t addr[16];
 
         // tokens are optional in CUDA 6.0
         // wave out the test if GPUDirectRDMA is not enabled
-        BREAK_IF_NEQ(gdr_pin_buffer(g, d_ptr, size, 0, 0, &mh), 0);
+		BREAK_IF_NEQ(gdr_pin_buffer(g, d_ptr, size, 0, 0, &mh), 0);
         ASSERT_NEQ(mh, 0U);
+		if(gdr_map_dma(g, mh, 3, 0, 0, addr, 16) <= 0) {
+			printf("couldn't get dma address\n");
+			return 1;
+		}
+
+		int fd = open("/sys/bus/pci/devices/0000:01:00.0/resource1", O_RDWR | O_SYNC);
+		if (fd < 0)
+			return 1;
+
+		const uintptr_t bar1_base = 0xc0000000;
+		const uintptr_t dma_address = addr[0];
+		if(dma_address < bar1_base) {
+			printf("dma address (%p) below BAR1\n", dma_address);
+			return 1;
+		}
+
+		const uintptr_t dma_offset = dma_address - bar1_base;
+
+		/* Map one page */
+		printf("mmap(%d, %lu, %#x, %#x, %d, %#lx)\n", 0,
+		    MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+		    fd, dma_offset);
+
+		auto map_base = reinterpret_cast<uintptr_t>(mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, dma_offset & ~MAP_MASK));
+		printf("mapped dma addr to %p\n", map_base);
+
+		BREAK_IF_NEQ(gdr_pin_buffer(g, d_ptr2, 2*size, 0, 0, &mh2), 0);
+		ASSERT_NEQ(mh2, 0U);
+		gdr_map_dma(g, mh2, 3, 0, 0, addr, 16);
+
 
         void *bar_ptr  = NULL;
         ASSERT_EQ(gdr_map(g, mh, &bar_ptr, size), 0);

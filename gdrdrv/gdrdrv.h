@@ -30,6 +30,8 @@ typedef __u32 gdr_hnd_t;
 
 //-----------
 
+struct pci_dev;
+
 struct GDRDRV_IOC_PIN_BUFFER_PARAMS
 {
     // in
@@ -80,6 +82,22 @@ struct GDRDRV_IOC_GET_INFO_PARAMS
 };
 
 #define GDRDRV_IOC_GET_INFO _IOWR(GDRDRV_IOCTL, 4, struct GDRDRV_IOC_GET_INFO_PARAMS *)
+
+//-----------
+
+struct GDRDRV_IOC_MAP_DMA_PARAMS
+{
+	// in
+	__u32 pci_bus;
+	__u32 pci_devfn;
+	__u64 phys_addr_buf;
+	__u32 buf_size;
+	gdr_hnd_t handle;
+	// out
+	__u32 entries_written;
+};
+
+#define GDRDRV_IOC_MAP_DMA _IOWR(GDRDRV_IOCTL, 6, struct GDRDRV_IOC_MAP_DMA_PARAMS)
 
 //-----------
 
