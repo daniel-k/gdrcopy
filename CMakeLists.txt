@@ -3,10 +3,7 @@ cmake_minimum_required(VERSION 3.7)
 project(gdrcopy
 	VERSION 1.0
 	DESCRIPTION "gdrcopy"
-	LANGUAGES C CXX)
-
-# fail if CUDA not found
-find_package(CUDA QUIET REQUIRED)
+	LANGUAGES C CXX CUDA)
 
 add_library(gdrapi SHARED
 	gdrapi.c
@@ -23,11 +20,14 @@ target_include_directories(gdrapi
 	PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/gdrdrv)
 
 
-cuda_add_executable(basic basic.cpp)
+add_executable(basic basic.cpp)
+set_source_files_properties(basic.cpp PROPERTIES LANGUAGE CUDA)
 target_link_libraries(basic gdrapi cuda)
 
-cuda_add_executable(validate validate.cpp)
-target_link_libraries(validate gdrapi)
+add_executable(validate validate.cpp)
+set_source_files_properties(validate.cpp PROPERTIES LANGUAGE CUDA)
+target_link_libraries(validate gdrapi cuda)
 
-cuda_add_executable(copybw copybw.cpp)
+add_executable(copybw copybw.cpp)
+set_source_files_properties(copybw.cpp PROPERTIES LANGUAGE CUDA)
 target_link_libraries(copybw gdrapi cuda)
